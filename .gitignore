@@ -1,0 +1,22 @@
+# Large model files (downloaded automatically by the server)
+*.onnx
+
+# Generated audio files
+*.wav
+*.mp3
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Temp files
+temp_*.wav
+t.wav
+test_output.wav
+output_speech.wav
+filler_audio.wav
+
+# Virtual environments
+venv/
+.env
