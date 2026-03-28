@@ -6,8 +6,8 @@ A fully offline AI voice assistant built on a **Raspberry Pi 4B** + **Windows La
 
 ---
 
-## Architecture
-
+## Architecture 
+ 
 ```
 Raspberry Pi 4B (Client)              Windows Laptop (Server)
 ┌──────────────────────┐              ┌─────────────────────────┐
@@ -66,12 +66,12 @@ python laptop_stt_server.py
 ```
 
 > **Note:** The Piper voice model (`en_US-lessac-medium.onnx`, ~63MB) is automatically downloaded on first launch.
-
+ 
 ---
 
-### Raspberry Pi (Client)
+### Raspberry Pi (Client) 
 
-**1. Install dependencies:**
+**1. Install dependencies:** 
 ```bash
 sudo apt install -y python3-pip portaudio19-dev alsa-utils
 pip3 install speechrecognition pyaudio requests
