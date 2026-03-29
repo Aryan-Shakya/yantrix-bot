@@ -1,33 +1,35 @@
 import os
+import wave
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
 from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 import uvicorn
-import requests
-import wave
 
 from faster_whisper import WhisperModel
 from piper.voice import PiperVoice
 
+# ── RAG engine
+from rag_engine import build_knowledge_base, retrieve_context
+
 app = FastAPI()
 
-# ==========================================
-# 1. LOAD WHISPER (HEARING)
-# Using small.en — 3x faster than medium.en with great accuracy!
-# ==========================================
+# ══════════════════════════════════════════════════════════════════
+# 1. LOAD WHISPER (STT)
+# ══════════════════════════════════════════════════════════════════
 print("==================================================")
-print("1. Loading Faster-Whisper (small.en) onto CPU...")
+print("1. Loading Faster-Whisper (small.en) on CPU...")
 whisper_model = WhisperModel("small.en", device="cpu", compute_type="int8")
-print("   -> Whisper small.en Loaded!")
+print("   -> Whisper small.en loaded!")
 
-# ==========================================
-# 2. LOAD PIPER (SPEAKING)
-# ==========================================
-print("\n2. Checking for Piper Robotic Voice files...")
+# ══════════════════════════════════════════════════════════════════
+# 2. LOAD PIPER (TTS)
+# ══════════════════════════════════════════════════════════════════
+import requests
+
 VOICE_MODEL = "en_US-lessac-medium.onnx"
-VOICE_JSON   = "en_US-lessac-medium.onnx.json"
+VOICE_JSON  = "en_US-lessac-medium.onnx.json"
 
 def download_file(url, dest):
     if not os.path.exists(dest):
@@ -39,6 +41,7 @@ def download_file(url, dest):
     else:
         print(f"   -> Found locally: {dest}")
 
+print("\n2. Checking Piper voice files...")
 download_file(
     "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_US/lessac/medium/en_US-lessac-medium.onnx",
     VOICE_MODEL
@@ -52,52 +55,67 @@ print("   -> Loading Piper voice into memory...")
 piper_voice = PiperVoice.load(VOICE_MODEL)
 print(f"   -> Piper loaded! Sample rate: {piper_voice.config.sample_rate} Hz")
 
-# ==========================================
-# 3. PRE-GENERATE PIPER FILLER AUDIO
-# Pre-generate "Hmm, let me think..." once at startup for instant playback!
-# ==========================================
+# ══════════════════════════════════════════════════════════════════
+# 3. PRE-GENERATE FILLER AUDIO
+# ══════════════════════════════════════════════════════════════════
 FILLER_PATH = "filler_audio.wav"
 print("\n3. Pre-generating filler audio...")
 with wave.open(FILLER_PATH, "wb") as wf:
     piper_voice.synthesize_wav("Hmm, let me think...", wf)
 print(f"   -> Filler audio ready! ({os.path.getsize(FILLER_PATH)} bytes)")
 
+# ══════════════════════════════════════════════════════════════════
+# 4. BUILD RAG KNOWLEDGE BASE
+# ══════════════════════════════════════════════════════════════════
+college_collection = build_knowledge_base()
+
 print("\n==================================================")
-print("DUAL-BRAIN SERVER IS ONLINE!")
-print("Waiting for Raspberry Pi on Port 8000...")
+print("YANTRIX BOT SERVER IS ONLINE — Port 8000")
+print("RAG-powered | Whisper STT | Piper TTS | Ollama LLM")
 print("==================================================\n")
 
 
-# ==========================================
-# ENDPOINT 1: HEARING  /api/stt
-# ==========================================
+# ══════════════════════════════════════════════════════════════════
+# ENDPOINT 1: STT + RAG  →  /api/stt
+# Receives audio from Pi → transcribes → retrieves RAG context
+# Returns both transcript and context to Pi
+# ══════════════════════════════════════════════════════════════════
 @app.post("/api/stt")
 async def process_audio(file: UploadFile = File(...)):
     file_location = f"temp_{file.filename}"
+
     with open(file_location, "wb+") as f:
         f.write(await file.read())
 
-    print(f"[STT] Received audio. Transcribing...")
+    print(f"[STT] Received audio — transcribing...")
     segments, _ = whisper_model.transcribe(
         file_location,
-        beam_size=3,                         # Reduced from 5 for speed
+        beam_size=3,
         condition_on_previous_text=False,
         language="en",
-        vad_filter=True,                     # Skip silent parts faster!
+        vad_filter=True,
         vad_parameters=dict(min_silence_duration_ms=300)
     )
-    text = " ".join([s.text for s in segments]).strip()
+    transcript = " ".join([s.text for s in segments]).strip()
 
     if os.path.exists(file_location):
         os.remove(file_location)
 
-    print(f"[STT] '{text}'")
-    return {"text": text}
+    print(f"[STT] Transcript: '{transcript}'")
+
+    # ── RAG retrieval
+    context = ""
+    if transcript:
+        context = retrieve_context(college_collection, transcript)
+        print(f"[RAG] Retrieved context ({len(context)} chars) for query: '{transcript[:60]}'")
+
+    return JSONResponse(content={"text": transcript, "context": context})
 
 
-# ==========================================
-# ENDPOINT 2: SPEAKING  /api/tts
-# ==========================================
+# ══════════════════════════════════════════════════════════════════
+# ENDPOINT 2: TTS  →  /api/tts
+# Receives text from Pi → synthesises with Piper → returns WAV
+# ══════════════════════════════════════════════════════════════════
 class TTSRequest(BaseModel):
     text: str
 
@@ -109,22 +127,21 @@ async def generate_speech(req: TTSRequest):
     try:
         with wave.open(output_path, "wb") as wav_file:
             piper_voice.synthesize_wav(req.text, wav_file)
-
         size = os.path.getsize(output_path)
-        print(f"[TTS] Generated {size} bytes. Sending...")
+        print(f"[TTS] Generated {size} bytes — sending...")
         return FileResponse(output_path, media_type="audio/wav", filename="speech.wav")
 
     except Exception as e:
         print(f"[TTS ERROR] {e}")
         import traceback
         traceback.print_exc()
-        return {"error": str(e)}
+        return JSONResponse(content={"error": str(e)}, status_code=500)
 
 
-# ==========================================
-# ENDPOINT 3: FILLER AUDIO  /api/filler
-# Pi downloads this once at startup for instant playback while thinking!
-# ==========================================
+# ══════════════════════════════════════════════════════════════════
+# ENDPOINT 3: FILLER AUDIO  →  /api/filler
+# Pi downloads this once at startup for instant playback
+# ══════════════════════════════════════════════════════════════════
 @app.get("/api/filler")
 async def get_filler_audio():
     return FileResponse(FILLER_PATH, media_type="audio/wav", filename="filler.wav")

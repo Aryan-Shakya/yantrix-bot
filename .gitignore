@@ -9,6 +9,8 @@
 __pycache__/
 *.pyc
 *.pyo
+en_US-lessac-medium.onnx
+filler_audio.wav
 
 # Temp files
 temp_*.wav
