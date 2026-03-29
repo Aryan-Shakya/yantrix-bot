@@ -68,18 +68,29 @@ def build_knowledge_base():
 
 
 def retrieve_context(collection, query: str, top_k: int = TOP_K) -> str:
-    """
-    Given a user query string, returns the top_k most semantically
-    similar Q&A pairs from the knowledge base as a single string block
-    ready to be injected into the Ollama prompt.
-    """
     if not query or not query.strip():
         return ""
 
     results = collection.query(
         query_texts=[query],
-        n_results=top_k
+        n_results=top_k,
+        include=["documents", "distances"]
     )
 
-    docs = results["documents"][0]   # list of top matching doc strings
-    return "\n\n".join(docs)
+    docs      = results["documents"][0]
+    distances = results["distances"][0]
+
+    # Distance threshold — lower = more similar
+    # Anything above 1.0 is likely irrelevant
+    THRESHOLD = 1.0
+
+    relevant_docs = [
+        doc for doc, dist in zip(docs, distances)
+        if dist < THRESHOLD
+    ]
+
+    if not relevant_docs:
+        print("[RAG] No relevant context found — bot will use general knowledge")
+        return ""
+
+    return "\n\n".join(relevant_docs)
